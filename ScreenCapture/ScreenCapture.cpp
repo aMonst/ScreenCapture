@@ -19,19 +19,21 @@ BOOL g_bMouseDown = FALSE;						//鼠标左键按下
 BOOL g_bMouseUp = FALSE;						//鼠标左键抬起
 
 BOOL g_bIsRect = FALSE;							//矩形区域已选定
-
+HWND g_MainWnd;									//截图窗口句柄
 // 此代码模块中包含的函数的前向声明: 
 ATOM				MyRegisterClass(HINSTANCE hInstance);
 BOOL				InitInstance(HINSTANCE, int);
 LRESULT CALLBACK	WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK	About(HWND, UINT, WPARAM, LPARAM);
-
+BOOL CALLBACK DialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 //消息处理函数
 LRESULT CALLBACK OnPaint(HWND hWnd, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK OnLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK OnLButtonUp(HWND hWnd, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK OnMouseMove(HWND hWnd, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK OnLButtonDBClick(HWND hWnd, WPARAM wParam, LPARAM lParam);
+
+BOOL CALLBACK OnDlgCommand(HWND hWnd, WPARAM wParam, LPARAM lParam);
 //功能函数
 void ConvertToGrayBitmap(HDC hSrcDc, HBITMAP hSrcBitmap);
 void WriteDatatoClipBoard();
@@ -55,11 +57,8 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	MyRegisterClass(hInstance);
 
 	// 执行应用程序初始化: 
-	if (!InitInstance (hInstance, nCmdShow))
-	{
-		return FALSE;
-	}
-
+	HWND hMainWnd = CreateDialog(hInstance, MAKEINTRESOURCE(IDD_MAIN_DLG), NULL, DialogProc);
+	ShowWindow(hMainWnd, nCmdShow);
 	hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_SCREENCAPTURE));
 
 	// 主消息循环: 
@@ -167,13 +166,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		break;
 	case WM_CREATE:
 		{
+		g_MainWnd = hWnd;
 			ScreenCapture();
 		}
 		break;
 	case WM_PAINT:
 		return OnPaint(hWnd, wParam, lParam);
-	case WM_DESTROY:
-		PostQuitMessage(0);
+	case WM_CLOSE:
+		CloseWindow(hWnd);
 		break;
 	case WM_MOUSEMOVE:
 		return OnMouseMove(hWnd, wParam, lParam);
@@ -230,20 +230,23 @@ LRESULT CALLBACK OnPaint(HWND hWnd, WPARAM wParam, LPARAM lParam)
 	SelectObject(hdc, hPen);
 	SelectObject(hdc, hBrush);
 	
-	//先贴一张灰度图片
+	//将灰度图像放到内存兼容dc中，这个是兼容该应用程序的dc
 	HDC memDc = CreateCompatibleDC(hdc);
 	HBITMAP bmp = CreateCompatibleBitmap(hdc, g_ScreenX, g_ScreenY);
 	SelectObject(memDc, bmp);
 
+	//将灰度图像绘制到这个兼容DC中
 	BitBlt(memDc, 0, 0, g_ScreenX, g_ScreenX, g_hGrayMemDc, 0, 0, SRCCOPY);
 	SelectObject(memDc, hBrush);
 	SelectObject(memDc, hPen);
 
 	if (g_bMouseDown || g_bIsRect)
 	{
+		//将正常图像的部分绘制到内存dc中，相当于在之前的画布上贴上一个正常的图像
 		BitBlt(memDc, g_rtMouse.left, g_rtMouse.top, g_rtMouse.right - g_rtMouse.left, g_rtMouse.bottom - g_rtMouse.top, g_hMemDc, g_rtMouse.left, g_rtMouse.top, SRCCOPY);
 		Rectangle(memDc, g_rtMouse.left, g_rtMouse.top, g_rtMouse.right, g_rtMouse.bottom);
 	}
+	//将整个图像贴到程序上作为背景
 	BitBlt(hdc, 0, 0, g_ScreenX, g_ScreenY, memDc, 0, 0, SRCCOPY);
 
 	DeleteObject(bmp);
@@ -348,6 +351,11 @@ LRESULT CALLBACK OnLButtonDBClick(HWND hWnd, WPARAM wParam, LPARAM lParam)
 	if (g_bIsRect)
 	{
 		WriteDatatoClipBoard();
+		ZeroMemory(&g_rtMouse, sizeof(POINT));
+		g_bIsRect = FALSE;
+		g_bMouseDown = FALSE;
+		g_bMouseUp = FALSE;
+		InvalidateRgn(hWnd, 0, FALSE);
 	}
 	return 0;
 }
@@ -364,9 +372,12 @@ void WriteDatatoClipBoard()
 	hMemDc = CreateCompatibleDC(hScrDc);
 	hBmp = CreateCompatibleBitmap(hScrDc, width, height);
 
+	//这几步利用SelectObject会返回原始GDI对象的特性，从DC中获取对应位图的信息
 	hOldBmp = (HBITMAP)SelectObject(hMemDc, hBmp);
+	//将截取部分的图片放入到画布中
 	BitBlt(hMemDc, 0, 0, width, height, g_hMemDc, g_rtMouse.left, g_rtMouse.top, SRCCOPY);
 	hBmp = (HBITMAP)SelectObject(hMemDc, hOldBmp);
+
 	DeleteDC(hMemDc);
 	DeleteDC(hScrDc);
 	//复制到剪贴板
@@ -380,4 +391,55 @@ void WriteDatatoClipBoard()
 	DeleteObject(hBmp);
 	DeleteObject(hMemDc);
 	DeleteObject(hScrDc);
+}
+
+BOOL CALLBACK DialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+	switch (uMsg)
+	{
+	case WM_DESTROY:
+		PostQuitMessage(0);
+		return TRUE;
+	case WM_COMMAND:
+		return OnDlgCommand(hWnd, wParam, lParam);
+	case WM_CLOSE:
+		CloseWindow(hWnd);
+		SendMessage(hWnd, WM_DESTROY, 0, 0);
+		return FALSE;
+	default:
+		return FALSE;
+	}
+}
+
+BOOL CALLBACK OnDlgCommand(HWND hWnd, WPARAM wParam, LPARAM lParam)
+{
+	int wmId = LOWORD(wParam);
+	int wmEvent = HIWORD(wParam);
+
+	if (wmEvent == BN_CLICKED)
+	{
+		if (wmId == IDC_NEW)
+		{
+			if (!IsWindow(g_MainWnd))
+			{
+				//截图窗口不存在，则显示这个窗口
+				if (!InitInstance(hInst, SW_NORMAL))
+				{
+					return FALSE;
+				}
+			}
+		}
+
+		if (wmId == IDCANCEL)
+		{
+			if (IsWindow(g_MainWnd))
+			{
+				//截图窗口存在则关闭截图窗口
+				SendMessage(g_MainWnd, WM_CLOSE, 0, 0);
+				return TRUE;
+			}
+		}
+		return TRUE;
+	}
+	return FALSE;
 }
